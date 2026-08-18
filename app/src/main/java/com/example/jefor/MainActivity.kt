@@ -23,6 +23,7 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.ImageButton
 import android.widget.Toast
+import java.io.File
 import androidx.activity.addCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
@@ -183,6 +184,10 @@ class MainActivity : AppCompatActivity() {
         webView.settings.allowContentAccess = true
         webView.settings.setGeolocationEnabled(true)
         webView.settings.mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
+
+        webView.settings.setSupportZoom(true)
+        webView.settings.builtInZoomControls = true
+        webView.settings.displayZoomControls = false
 
         webView.setDownloadListener { url, userAgent, contentDisposition, mimeType, _ ->
             enqueueDownload(url, userAgent, contentDisposition, mimeType)
@@ -352,10 +357,18 @@ class MainActivity : AppCompatActivity() {
                 addRequestHeader("User-Agent", userAgent ?: "")
                 CookieManager.getInstance().getCookie(url)?.let { addRequestHeader("Cookie", it) }
                 setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
-                setDestinationInExternalPublicDir(
-                    Environment.DIRECTORY_DOWNLOADS,
-                    URLUtil.guessFileName(url, contentDisposition, mimeType)
-                )
+                val fileName = URLUtil.guessFileName(url, contentDisposition, mimeType)
+                val downloadsDir = getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
+                if (downloadsDir != null) {
+                    setDestinationUri(
+                        Uri.fromFile(File(downloadsDir, fileName))
+                    )
+                } else {
+                    setDestinationInExternalPublicDir(
+                        Environment.DIRECTORY_DOWNLOADS,
+                        fileName
+                    )
+                }
             }
             val downloadManager = getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
             downloadManager.enqueue(request)
