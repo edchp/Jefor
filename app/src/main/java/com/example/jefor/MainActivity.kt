@@ -2,16 +2,22 @@
 
 import android.Manifest
 import android.annotation.SuppressLint
+import android.app.AlertDialog
 import android.app.DownloadManager
 import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
+import android.graphics.Color
+import android.graphics.Typeface
+import android.location.Location
 import android.net.Uri
 import android.os.Bundle
 import android.os.Environment
-import android.os.Message
+import android.os.Looper
+import android.view.Gravity
+import android.view.View
 import android.webkit.CookieManager
 import android.webkit.GeolocationPermissions
 import android.webkit.URLUtil
@@ -21,20 +27,37 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.widget.EditText
 import android.widget.ImageButton
+import android.widget.LinearLayout
+import android.widget.ProgressBar
+import android.widget.TextView
 import android.widget.Toast
+import com.google.android.gms.location.FusedLocationProviderClient
+import com.google.android.gms.location.LocationCallback
+import com.google.android.gms.location.LocationRequest
+import com.google.android.gms.location.LocationResult
+import com.google.android.gms.location.LocationServices
+import com.google.android.gms.location.Priority
 import java.io.File
+import java.net.Inet4Address
+import java.net.NetworkInterface
+import java.net.URL
+import java.net.URLEncoder
+import java.util.UUID
+import java.util.concurrent.Executors
+import javax.net.ssl.HttpsURLConnection
 import androidx.activity.addCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
-import java.util.UUID
 
 class MainActivity : AppCompatActivity() {
 
     private lateinit var webView: WebView
     private var filePathCallback: ValueCallback<Array<Uri>>? = null
+    private lateinit var fusedLocationClient: FusedLocationProviderClient
 
     private val fileChooserLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
@@ -61,45 +84,31 @@ class MainActivity : AppCompatActivity() {
         callback.onReceiveValue(uris)
     }
 
-    private fun getOrCreateDeviceToken(): String {
-        val prefs = getSharedPreferences("jefor_prefs", Context.MODE_PRIVATE)
-        var token = prefs.getString("device_token", null)
-        if (token.isNullOrBlank() || !Regex("^[a-f0-9]{32,128}$").matches(token)) {
-            token = UUID.randomUUID().toString().replace("-", "") +
-                UUID.randomUUID().toString().replace("-", "")
-            prefs.edit().putString("device_token", token).apply()
-        }
-        return token
-    }
-
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
-        if (ContextCompat.checkSelfPermission(
-                this,
-                Manifest.permission.ACCESS_FINE_LOCATION
-            ) != PackageManager.PERMISSION_GRANTED
-        ) {
-            ActivityCompat.requestPermissions(
-                this,
-                arrayOf(Manifest.permission.ACCESS_FINE_LOCATION),
-                100
-            )
+        fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
+
+        val perms = mutableListOf<String>()
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+            perms.add(Manifest.permission.ACCESS_FINE_LOCATION)
+        }
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+            perms.add(Manifest.permission.ACCESS_COARSE_LOCATION)
+        }
+        if (perms.isNotEmpty()) {
+            ActivityCompat.requestPermissions(this, perms.toTypedArray(), 100)
         }
 
         webView = findViewById(R.id.webView)
 
         val btnBack = findViewById<ImageButton>(R.id.btnBack)
         val btnHome = findViewById<ImageButton>(R.id.btnHome)
+        val btnAsistencia = findViewById<ImageButton>(R.id.btnAsistencia)
 
         webView.webViewClient = object : WebViewClient() {
-            override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
-                super.onPageStarted(view, url, favicon)
-                injectDeviceToken(view)
-            }
-
             override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
                 val url = request?.url?.toString() ?: return false
                 return handleUrl(url)
@@ -150,7 +159,7 @@ class MainActivity : AppCompatActivity() {
                 view: WebView?,
                 isDialog: Boolean,
                 isUserGesture: Boolean,
-                resultMsg: Message?
+                resultMsg: android.os.Message?
             ): Boolean {
                 val transport = resultMsg?.obj as? WebView.WebViewTransport ?: return false
                 val popupWebView = WebView(this@MainActivity)
@@ -205,6 +214,10 @@ class MainActivity : AppCompatActivity() {
             webView.loadUrl(HOME_URL)
         }
 
+        btnAsistencia.setOnClickListener {
+            mostrarDialogoAsistencia()
+        }
+
         onBackPressedDispatcher.addCallback(this) {
             if (webView.canGoBack()) {
                 webView.goBack()
@@ -214,15 +227,200 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun injectDeviceToken(view: WebView?) {
-        val token = getOrCreateDeviceToken()
-        val js = "(function(){" +
-            "try{" +
-            "localStorage.setItem('asistencia_device_token','${token}');" +
-            "document.cookie='asistencia_device_token=${token}; max-age=31536000; path=/asistencia; SameSite=Lax';" +
-            "}catch(e){}" +
-            "})();"
-        view?.evaluateJavascript(js, null)
+    private fun mostrarDialogoAsistencia() {
+        val prefs = getSharedPreferences("jefor_prefs", Context.MODE_PRIVATE)
+        val dniGuardado = prefs.getString("dni", "") ?: ""
+
+        val layout = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(64, 48, 64, 24)
+        }
+
+        val titulo = TextView(this).apply {
+            text = "Registro de Asistencia"
+            textSize = 20f
+            typeface = null
+            setTextColor(Color.BLACK)
+            gravity = Gravity.CENTER
+            setPadding(0, 0, 0, 32)
+        }
+        layout.addView(titulo)
+
+        val etDni = EditText(this).apply {
+            hint = "DNI"
+            setText(dniGuardado)
+            inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS
+            setPadding(32, 24, 32, 24)
+        }
+        layout.addView(etDni)
+
+        val btnEntrada = android.widget.Button(this).apply {
+            text = "ENTRADA"
+            setBackgroundColor(Color.parseColor("#4CAF50"))
+            setTextColor(Color.WHITE)
+            typeface = Typeface.DEFAULT_BOLD
+            setPadding(32, 24, 32, 24)
+            val params = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { setMargins(0, 24, 0, 0) }
+            layoutParams = params
+        }
+        layout.addView(btnEntrada)
+
+        val btnSalida = android.widget.Button(this).apply {
+            text = "SALIDA"
+            setBackgroundColor(Color.parseColor("#F44336"))
+            setTextColor(Color.WHITE)
+            typeface = Typeface.DEFAULT_BOLD
+            setPadding(32, 24, 32, 24)
+            val params = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { setMargins(0, 16, 0, 0) }
+            layoutParams = params
+        }
+        layout.addView(btnSalida)
+
+        val progressBar = ProgressBar(this).apply {
+            visibility = View.GONE
+            val params = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply {
+                gravity = Gravity.CENTER
+                setMargins(0, 24, 0, 0)
+            }
+            layoutParams = params
+        }
+        layout.addView(progressBar)
+
+        val dialog = AlertDialog.Builder(this)
+            .setView(layout)
+            .setNegativeButton("Cancelar") { d, _ -> d.dismiss() }
+            .create()
+
+        btnEntrada.setOnClickListener {
+            val dni = etDni.text.toString().trim()
+            if (dni.isEmpty()) {
+                Toast.makeText(this, "Introduce tu DNI", Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
+            prefs.edit().putString("dni", dni).apply()
+            progressBar.visibility = View.VISIBLE
+            btnEntrada.isEnabled = false
+            btnSalida.isEnabled = false
+            registrarAsistencia(dni, "entrada", dialog, progressBar, btnEntrada, btnSalida)
+        }
+
+        btnSalida.setOnClickListener {
+            val dni = etDni.text.toString().trim()
+            if (dni.isEmpty()) {
+                Toast.makeText(this, "Introduce tu DNI", Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
+            prefs.edit().putString("dni", dni).apply()
+            progressBar.visibility = View.VISIBLE
+            btnEntrada.isEnabled = false
+            btnSalida.isEnabled = false
+            registrarAsistencia(dni, "salida", dialog, progressBar, btnEntrada, btnSalida)
+        }
+
+        dialog.show()
+    }
+
+    private fun registrarAsistencia(
+        dni: String,
+        accion: String,
+        dialog: AlertDialog,
+        progressBar: ProgressBar,
+        btnEntrada: android.widget.Button,
+        btnSalida: android.widget.Button
+    ) {
+        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED &&
+            ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED
+        ) {
+            Toast.makeText(this, "Permiso de ubicacion no concedido", Toast.LENGTH_SHORT).show()
+            progressBar.visibility = View.GONE
+            btnEntrada.isEnabled = true
+            btnSalida.isEnabled = true
+            return
+        }
+
+        fusedLocationClient.lastLocation.addOnSuccessListener { location: Location? ->
+            val lat = location?.latitude ?: 0.0
+            val lon = location?.longitude ?: 0.0
+            val ip = getDeviceIpAddress()
+
+            Executors.newSingleThreadExecutor().execute {
+                try {
+                    val params = mapOf(
+                        "dni" to dni,
+                        "accion" to accion,
+                        "ip" to ip,
+                        "latitud" to lat.toString(),
+                        "longitud" to lon.toString()
+                    )
+                    val respuesta = httpPost(ASISTENCIA_URL, params)
+
+                    runOnUiThread {
+                        dialog.dismiss()
+                        Toast.makeText(this, respuesta, Toast.LENGTH_LONG).show()
+                    }
+                } catch (e: Exception) {
+                    runOnUiThread {
+                        progressBar.visibility = View.GONE
+                        btnEntrada.isEnabled = true
+                        btnSalida.isEnabled = true
+                        Toast.makeText(this, "Error: ${e.message}", Toast.LENGTH_LONG).show()
+                    }
+                }
+            }
+        }.addOnFailureListener {
+            Toast.makeText(this, "No se pudo obtener la ubicacion", Toast.LENGTH_SHORT).show()
+            progressBar.visibility = View.GONE
+            btnEntrada.isEnabled = true
+            btnSalida.isEnabled = true
+        }
+    }
+
+    private fun httpPost(url: String, params: Map<String, String>): String {
+        val body = params.entries.joinToString("&") { (k, v) ->
+            "${URLEncoder.encode(k, "UTF-8")}=${URLEncoder.encode(v, "UTF-8")}"
+        }
+        val conn = URL(url).openConnection() as HttpsURLConnection
+        try {
+            conn.requestMethod = "POST"
+            conn.doOutput = true
+            conn.setRequestProperty("Content-Type", "application/x-www-form-urlencoded")
+            conn.setRequestProperty("User-Agent", "JeforApp/3.0")
+            conn.connectTimeout = 15000
+            conn.readTimeout = 15000
+            conn.outputStream.bufferedWriter().use { it.write(body) }
+            val code = conn.responseCode
+            val stream = if (code in 200..399) conn.inputStream else conn.errorStream
+            return stream?.bufferedReader()?.use { it.readText() } ?: "Sin respuesta"
+        } finally {
+            conn.disconnect()
+        }
+    }
+
+    private fun getDeviceIpAddress(): String {
+        try {
+            val interfaces = NetworkInterface.getNetworkInterfaces()
+            while (interfaces.hasMoreElements()) {
+                val iface = interfaces.nextElement()
+                if (iface.isLoopback || !iface.isUp) continue
+                val addresses = iface.inetAddresses
+                while (addresses.hasMoreElements()) {
+                    val addr = addresses.nextElement()
+                    if (!addr.isLoopbackAddress && addr is Inet4Address) {
+                        return addr.hostAddress ?: "0.0.0.0"
+                    }
+                }
+            }
+        } catch (_: Exception) {}
+        return "0.0.0.0"
     }
 
     private fun createSafeFileChooserIntent(
@@ -380,5 +578,6 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         private const val HOME_URL = "https://jefor.online/enlaces.php"
+        private const val ASISTENCIA_URL = "https://jefor.online/asistencia/guardar_asistencia.php"
     }
 }
