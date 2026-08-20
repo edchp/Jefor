@@ -11,14 +11,10 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
-import android.graphics.Color
-import android.graphics.Typeface
-import android.location.Location
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
-import android.os.Looper
 import android.view.Gravity
 import android.view.View
 import android.webkit.CookieManager
@@ -30,11 +26,7 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
-import android.widget.EditText
 import android.widget.ImageButton
-import android.widget.LinearLayout
-import android.widget.ProgressBar
-import android.widget.TextView
 import android.widget.Toast
 import com.google.android.gms.location.FusedLocationProviderClient
 import com.google.android.gms.location.LocationServices
@@ -45,12 +37,12 @@ import java.net.URL
 import java.net.URLEncoder
 import java.util.concurrent.Executors
 import javax.net.ssl.HttpsURLConnection
+import org.json.JSONObject
 import androidx.activity.addCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
-import org.json.JSONObject
 
 class MainActivity : AppCompatActivity() {
 
@@ -214,7 +206,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         btnAsistencia.setOnClickListener {
-            mostrarDialogoAsistencia()
+            webView.loadUrl(ASISTENCIA_URL)
         }
 
         onBackPressedDispatcher.addCallback(this) {
@@ -333,202 +325,6 @@ class MainActivity : AppCompatActivity() {
         } else {
             registerReceiver(receiver, IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE))
         }
-    }
-
-    private fun mostrarDialogoAsistencia() {
-        val prefs = getSharedPreferences("jefor_prefs", Context.MODE_PRIVATE)
-        val dniGuardado = prefs.getString("dni", "") ?: ""
-
-        val layout = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(64, 48, 64, 24)
-        }
-
-        val titulo = TextView(this).apply {
-            text = "Registro de Asistencia"
-            textSize = 20f
-            typeface = null
-            setTextColor(Color.BLACK)
-            gravity = Gravity.CENTER
-            setPadding(0, 0, 0, 32)
-        }
-        layout.addView(titulo)
-
-        val etDni = EditText(this).apply {
-            hint = "DNI"
-            setText(dniGuardado)
-            inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS
-            setPadding(32, 24, 32, 24)
-        }
-        layout.addView(etDni)
-
-        val btnEntrada = android.widget.Button(this).apply {
-            text = "ENTRADA"
-            setBackgroundColor(Color.parseColor("#4CAF50"))
-            setTextColor(Color.WHITE)
-            typeface = Typeface.DEFAULT_BOLD
-            setPadding(32, 24, 32, 24)
-            val params = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-            ).apply { setMargins(0, 24, 0, 0) }
-            layoutParams = params
-        }
-        layout.addView(btnEntrada)
-
-        val btnSalida = android.widget.Button(this).apply {
-            text = "SALIDA"
-            setBackgroundColor(Color.parseColor("#F44336"))
-            setTextColor(Color.WHITE)
-            typeface = Typeface.DEFAULT_BOLD
-            setPadding(32, 24, 32, 24)
-            val params = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-            ).apply { setMargins(0, 16, 0, 0) }
-            layoutParams = params
-        }
-        layout.addView(btnSalida)
-
-        val progressBar = ProgressBar(this).apply {
-            visibility = View.GONE
-            val params = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.WRAP_CONTENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-            ).apply {
-                gravity = Gravity.CENTER
-                setMargins(0, 24, 0, 0)
-            }
-            layoutParams = params
-        }
-        layout.addView(progressBar)
-
-        val dialog = AlertDialog.Builder(this)
-            .setView(layout)
-            .setNegativeButton("Cancelar") { d, _ -> d.dismiss() }
-            .create()
-
-        btnEntrada.setOnClickListener {
-            val dni = etDni.text.toString().trim()
-            if (dni.isEmpty()) {
-                Toast.makeText(this, "Introduce tu DNI", Toast.LENGTH_SHORT).show()
-                return@setOnClickListener
-            }
-            prefs.edit().putString("dni", dni).apply()
-            progressBar.visibility = View.VISIBLE
-            btnEntrada.isEnabled = false
-            btnSalida.isEnabled = false
-            registrarAsistencia(dni, "entrada", dialog, progressBar, btnEntrada, btnSalida)
-        }
-
-        btnSalida.setOnClickListener {
-            val dni = etDni.text.toString().trim()
-            if (dni.isEmpty()) {
-                Toast.makeText(this, "Introduce tu DNI", Toast.LENGTH_SHORT).show()
-                return@setOnClickListener
-            }
-            prefs.edit().putString("dni", dni).apply()
-            progressBar.visibility = View.VISIBLE
-            btnEntrada.isEnabled = false
-            btnSalida.isEnabled = false
-            registrarAsistencia(dni, "salida", dialog, progressBar, btnEntrada, btnSalida)
-        }
-
-        dialog.show()
-    }
-
-    private fun registrarAsistencia(
-        dni: String,
-        accion: String,
-        dialog: AlertDialog,
-        progressBar: ProgressBar,
-        btnEntrada: android.widget.Button,
-        btnSalida: android.widget.Button
-    ) {
-        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED &&
-            ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED
-        ) {
-            Toast.makeText(this, "Permiso de ubicacion no concedido", Toast.LENGTH_SHORT).show()
-            progressBar.visibility = View.GONE
-            btnEntrada.isEnabled = true
-            btnSalida.isEnabled = true
-            return
-        }
-
-        fusedLocationClient.lastLocation.addOnSuccessListener { location: Location? ->
-            val lat = location?.latitude ?: 0.0
-            val lon = location?.longitude ?: 0.0
-            val ip = getDeviceIpAddress()
-
-            Executors.newSingleThreadExecutor().execute {
-                try {
-                    val params = mapOf(
-                        "dni" to dni,
-                        "accion" to accion,
-                        "ip" to ip,
-                        "latitud" to lat.toString(),
-                        "longitud" to lon.toString()
-                    )
-                    val respuesta = httpPost(ASISTENCIA_URL, params)
-
-                    runOnUiThread {
-                        dialog.dismiss()
-                        Toast.makeText(this, respuesta, Toast.LENGTH_LONG).show()
-                    }
-                } catch (e: Exception) {
-                    runOnUiThread {
-                        progressBar.visibility = View.GONE
-                        btnEntrada.isEnabled = true
-                        btnSalida.isEnabled = true
-                        Toast.makeText(this, "Error: ${e.message}", Toast.LENGTH_LONG).show()
-                    }
-                }
-            }
-        }.addOnFailureListener {
-            Toast.makeText(this, "No se pudo obtener la ubicacion", Toast.LENGTH_SHORT).show()
-            progressBar.visibility = View.GONE
-            btnEntrada.isEnabled = true
-            btnSalida.isEnabled = true
-        }
-    }
-
-    private fun httpPost(url: String, params: Map<String, String>): String {
-        val body = params.entries.joinToString("&") { (k, v) ->
-            "${URLEncoder.encode(k, "UTF-8")}=${URLEncoder.encode(v, "UTF-8")}"
-        }
-        val conn = URL(url).openConnection() as HttpsURLConnection
-        try {
-            conn.requestMethod = "POST"
-            conn.doOutput = true
-            conn.setRequestProperty("Content-Type", "application/x-www-form-urlencoded")
-            conn.setRequestProperty("User-Agent", "JeforApp/3.0")
-            conn.connectTimeout = 15000
-            conn.readTimeout = 15000
-            conn.outputStream.bufferedWriter().use { it.write(body) }
-            val code = conn.responseCode
-            val stream = if (code in 200..399) conn.inputStream else conn.errorStream
-            return stream?.bufferedReader()?.use { it.readText() } ?: "Sin respuesta"
-        } finally {
-            conn.disconnect()
-        }
-    }
-
-    private fun getDeviceIpAddress(): String {
-        try {
-            val interfaces = NetworkInterface.getNetworkInterfaces()
-            while (interfaces.hasMoreElements()) {
-                val iface = interfaces.nextElement()
-                if (iface.isLoopback || !iface.isUp) continue
-                val addresses = iface.inetAddresses
-                while (addresses.hasMoreElements()) {
-                    val addr = addresses.nextElement()
-                    if (!addr.isLoopbackAddress && addr is Inet4Address) {
-                        return addr.hostAddress ?: "0.0.0.0"
-                    }
-                }
-            }
-        } catch (_: Exception) {}
-        return "0.0.0.0"
     }
 
     private fun createSafeFileChooserIntent(
@@ -686,7 +482,7 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         private const val HOME_URL = "https://jefor.online/enlaces.php"
-        private const val ASISTENCIA_URL = "https://jefor.online/asistencia/guardar_asistencia.php"
+        private const val ASISTENCIA_URL = "https://jefor.online/asistencia"
         private const val GITHUB_API_URL = "https://api.github.com/repos/edchp/Jefor/releases/latest"
     }
 }
