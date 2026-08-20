@@ -5,14 +5,17 @@ import android.annotation.SuppressLint
 import android.app.AlertDialog
 import android.app.DownloadManager
 import android.content.ActivityNotFoundException
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.Typeface
 import android.location.Location
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.os.Environment
 import android.os.Looper
@@ -34,17 +37,12 @@ import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
 import com.google.android.gms.location.FusedLocationProviderClient
-import com.google.android.gms.location.LocationCallback
-import com.google.android.gms.location.LocationRequest
-import com.google.android.gms.location.LocationResult
 import com.google.android.gms.location.LocationServices
-import com.google.android.gms.location.Priority
 import java.io.File
 import java.net.Inet4Address
 import java.net.NetworkInterface
 import java.net.URL
 import java.net.URLEncoder
-import java.util.UUID
 import java.util.concurrent.Executors
 import javax.net.ssl.HttpsURLConnection
 import androidx.activity.addCallback
@@ -52,6 +50,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import org.json.JSONObject
 
 class MainActivity : AppCompatActivity() {
 
@@ -224,6 +223,115 @@ class MainActivity : AppCompatActivity() {
             } else {
                 finish()
             }
+        }
+
+        comprobarActualizaciones()
+    }
+
+    private fun comprobarActualizaciones() {
+        Executors.newSingleThreadExecutor().execute {
+            try {
+                val conn = URL(GITHUB_API_URL).openConnection() as HttpsURLConnection
+                conn.setRequestProperty("Accept", "application/vnd.github.v3+json")
+                conn.setRequestProperty("User-Agent", "JeforApp/3.0")
+                conn.connectTimeout = 10000
+                conn.readTimeout = 10000
+                val body = conn.inputStream.bufferedReader().use { it.readText() }
+                conn.disconnect()
+
+                val json = JSONObject(body)
+                val tag = json.optString("tag_name", "")
+                val versionName = tag.removePrefix("v")
+                val apkAsset = json.getJSONArray("assets").let { arr ->
+                    (0 until arr.length()).map { arr.getJSONObject(it) }
+                }.firstOrNull { it.getString("name").endsWith(".apk") }
+
+                if (versionName.isBlank() || apkAsset == null) return@execute
+
+                val remoteVersionCode = versionNameToCode(versionName)
+                val localVersionCode = try {
+                    packageManager.getPackageInfo(packageName, 0).longVersionCode.toInt()
+                } catch (_: Exception) { 0 }
+
+                if (remoteVersionCode > localVersionCode) {
+                    val downloadUrl = apkAsset.getString("browser_download_url")
+                    runOnUiThread {
+                        mostrarDialogoActualizacion(versionName, downloadUrl)
+                    }
+                }
+            } catch (_: Exception) {}
+        }
+    }
+
+    private fun versionNameToCode(name: String): Int {
+        val parts = name.split(".")
+        var code = 0
+        for (part in parts) {
+            code = code * 100 + (part.toIntOrNull() ?: 0)
+        }
+        return code
+    }
+
+    private fun mostrarDialogoActualizacion(version: String, downloadUrl: String) {
+        AlertDialog.Builder(this)
+            .setTitle("Actualizacion disponible")
+            .setMessage("Hay una nueva version ($version). Se descargara automaticamente.")
+            .setPositiveButton("Actualizar") { _, _ -> descargarActualizacion(downloadUrl) }
+            .setNegativeButton("Ahora no", null)
+            .show()
+    }
+
+    private fun descargarActualizacion(url: String) {
+        Toast.makeText(this, "Descargando actualizacion...", Toast.LENGTH_SHORT).show()
+
+        val dm = getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+        val request = DownloadManager.Request(Uri.parse(url)).apply {
+            setTitle("Actualizando Jefor")
+            setDescription("Descargando version nueva...")
+            setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+            setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, "Jefor-update.apk")
+        }
+        val downloadId = dm.enqueue(request)
+
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(ctx: Context?, intent: Intent?) {
+                val id = intent?.getLongExtra(DownloadManager.EXTRA_DOWNLOAD_ID, -1) ?: return
+                if (id != downloadId) return
+
+                ctx?.unregisterReceiver(this)
+
+                val query = DownloadManager.Query().setFilterById(downloadId)
+                val cursor = dm.query(query)
+                if (cursor != null && cursor.moveToFirst()) {
+                    val status = cursor.getInt(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS))
+                    if (status == DownloadManager.STATUS_SUCCESSFUL) {
+                        val fileUri = cursor.getString(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_LOCAL_URI))
+                        val uri = Uri.parse(fileUri)
+                        val file = File(uri.path!!)
+                        val installIntent = Intent(Intent.ACTION_VIEW).apply {
+                            setDataAndType(
+                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N)
+                                    androidx.core.content.FileProvider.getUriForFile(
+                                        applicationContext,
+                                        "$packageName.fileprovider",
+                                        file
+                                    )
+                                else Uri.fromFile(file),
+                                "application/vnd.android.package-archive"
+                            )
+                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                        }
+                        startActivity(installIntent)
+                    }
+                    cursor.close()
+                }
+            }
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(receiver, IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE), RECEIVER_NOT_EXPORTED)
+        } else {
+            registerReceiver(receiver, IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE))
         }
     }
 
@@ -579,5 +687,6 @@ class MainActivity : AppCompatActivity() {
     companion object {
         private const val HOME_URL = "https://jefor.online/enlaces.php"
         private const val ASISTENCIA_URL = "https://jefor.online/asistencia/guardar_asistencia.php"
+        private const val GITHUB_API_URL = "https://api.github.com/repos/edchp/Jefor/releases/latest"
     }
 }
