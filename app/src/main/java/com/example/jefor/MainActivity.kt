@@ -159,13 +159,14 @@ class MainActivity : AppCompatActivity() {
                         view: WebView?,
                         request: WebResourceRequest?
                     ): Boolean {
-                        request?.url?.toString()?.let { handlePopupUrl(it) }
+                        val url = request?.url?.toString() ?: return true
+                        webView.loadUrl(url)
                         return true
                     }
 
                     @Deprecated("Deprecated in Java")
                     override fun shouldOverrideUrlLoading(view: WebView?, url: String?): Boolean {
-                        url?.let { handlePopupUrl(it) }
+                        url?.let { webView.loadUrl(it) }
                         return true
                     }
                 }
