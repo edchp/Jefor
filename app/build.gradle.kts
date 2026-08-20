@@ -14,8 +14,8 @@ android {
         applicationId = "com.example.jefor"
         minSdk = 24
         targetSdk = 36
-        versionCode = 5
-        versionName = "3.2"
+        versionCode = 7
+        versionName = "3.3"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

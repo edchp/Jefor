@@ -233,35 +233,37 @@ class MainActivity : AppCompatActivity() {
 
                 val json = JSONObject(body)
                 val tag = json.optString("tag_name", "")
-                val versionName = tag.removePrefix("v")
+                val remoteVersion = tag.removePrefix("v")
                 val apkAsset = json.getJSONArray("assets").let { arr ->
                     (0 until arr.length()).map { arr.getJSONObject(it) }
                 }.firstOrNull { it.getString("name").endsWith(".apk") }
 
-                if (versionName.isBlank() || apkAsset == null) return@execute
+                if (remoteVersion.isBlank() || apkAsset == null) return@execute
 
-                val remoteVersionCode = versionNameToCode(versionName)
-                val localVersionCode = try {
-                    packageManager.getPackageInfo(packageName, 0).longVersionCode.toInt()
-                } catch (_: Exception) { 0 }
+                val localVersion = try {
+                    packageManager.getPackageInfo(packageName, 0).versionName ?: "0"
+                } catch (_: Exception) { "0" }
 
-                if (remoteVersionCode > localVersionCode) {
+                if (compareVersions(remoteVersion, localVersion) > 0) {
                     val downloadUrl = apkAsset.getString("browser_download_url")
                     runOnUiThread {
-                        mostrarDialogoActualizacion(versionName, downloadUrl)
+                        mostrarDialogoActualizacion(remoteVersion, downloadUrl)
                     }
                 }
             } catch (_: Exception) {}
         }
     }
 
-    private fun versionNameToCode(name: String): Int {
-        val parts = name.split(".")
-        var code = 0
-        for (part in parts) {
-            code = code * 100 + (part.toIntOrNull() ?: 0)
+    private fun compareVersions(a: String, b: String): Int {
+        val pa = a.split(".").map { it.toIntOrNull() ?: 0 }
+        val pb = b.split(".").map { it.toIntOrNull() ?: 0 }
+        val max = maxOf(pa.size, pb.size)
+        for (i in 0 until max) {
+            val va = pa.getOrElse(i) { 0 }
+            val vb = pb.getOrElse(i) { 0 }
+            if (va != vb) return va - vb
         }
-        return code
+        return 0
     }
 
     private fun mostrarDialogoActualizacion(version: String, downloadUrl: String) {
@@ -281,7 +283,7 @@ class MainActivity : AppCompatActivity() {
             setTitle("Actualizando Jefor")
             setDescription("Descargando version nueva...")
             setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
-            setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, "Jefor-update.apk")
+            setDestinationInExternalFilesDir(this@MainActivity, null, "Jefor-update.apk")
         }
         val downloadId = dm.enqueue(request)
 
@@ -289,33 +291,36 @@ class MainActivity : AppCompatActivity() {
             override fun onReceive(ctx: Context?, intent: Intent?) {
                 val id = intent?.getLongExtra(DownloadManager.EXTRA_DOWNLOAD_ID, -1) ?: return
                 if (id != downloadId) return
-
-                ctx?.unregisterReceiver(this)
+                try { ctx?.unregisterReceiver(this) } catch (_: Exception) {}
 
                 val query = DownloadManager.Query().setFilterById(downloadId)
                 val cursor = dm.query(query)
                 if (cursor != null && cursor.moveToFirst()) {
                     val status = cursor.getInt(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS))
-                    if (status == DownloadManager.STATUS_SUCCESSFUL) {
-                        val fileUri = cursor.getString(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_LOCAL_URI))
-                        val uri = Uri.parse(fileUri)
-                        val file = File(uri.path!!)
-                        val installIntent = Intent(Intent.ACTION_VIEW).apply {
-                            setDataAndType(
-                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N)
-                                    androidx.core.content.FileProvider.getUriForFile(
+                    val localUri = cursor.getString(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_LOCAL_URI))
+                    cursor.close()
+
+                    if (status == DownloadManager.STATUS_SUCCESSFUL && localUri != null) {
+                        try {
+                            val apkFile = File(Uri.parse(localUri).path!!)
+                            val installIntent = Intent(Intent.ACTION_VIEW).apply {
+                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                                    val uri = androidx.core.content.FileProvider.getUriForFile(
                                         applicationContext,
                                         "$packageName.fileprovider",
-                                        file
+                                        apkFile
                                     )
-                                else Uri.fromFile(file),
-                                "application/vnd.android.package-archive"
-                            )
-                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                    setDataAndType(uri, "application/vnd.android.package-archive")
+                                } else {
+                                    setDataAndType(Uri.fromFile(apkFile), "application/vnd.android.package-archive")
+                                }
+                                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+                            }
+                            startActivity(installIntent)
+                        } catch (e: Exception) {
+                            Toast.makeText(this@MainActivity, "Error al instalar: ${e.message}", Toast.LENGTH_LONG).show()
                         }
-                        startActivity(installIntent)
                     }
-                    cursor.close()
                 }
             }
         }
